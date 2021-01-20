@@ -1,5 +1,5 @@
 from transformer_asr.speech_featurizers import TFSpeechFeaturizer, read_raw_audio
-from transformer_asr.augments import Augmentation
+
 from transformers import BasicTokenizer, AutoTokenizer
 from tqdm import tqdm
 import numpy as np
@@ -7,8 +7,6 @@ import sys
 import tensorflow as tf
 import json
 import multiprocessing
-
-augmentations = Augmentation()
 
 
 def float_feature(list_of_floats):
@@ -167,11 +165,7 @@ def build_dataset(
         with tf.device("/CPU:0"):
             audio = read_raw_audio(audio_byte, speech_featurizer.sample_rate)
 
-            audio = augmentations.before.augment(audio)
-
             audio = speech_featurizer.extract(audio)
-
-            audio = augmentations.after.augment(audio)
 
             audio = tf.convert_to_tensor(audio, tf.float32)
 
