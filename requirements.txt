@@ -1,0 +1,8 @@
+numpy~=1.18.5
+transformers~=4.0.0
+tqdm~=4.54.0
+six~=1.15.0
+librosa>=0.8.0
+soundfile>=0.10.3
+tensorflow~=2.4.0
+PyYAML>=5.3.1
