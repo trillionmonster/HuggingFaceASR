@@ -372,7 +372,7 @@ class TFSpeechFeaturizer(SpeechFeaturizer):
     @property
     def shape(self) -> list:
         # None for time dimension
-        return [None, self.num_feature_bins, 1]
+        return [None, self.num_feature_bins]
 
     def stft(self, signal):
         return tf.square(
@@ -430,7 +430,7 @@ class TFSpeechFeaturizer(SpeechFeaturizer):
         else:
             raise ValueError("feature_type must be either 'mfcc', 'log_mel_spectrogram' or 'spectrogram'")
 
-        features = tf.expand_dims(features, axis=-1)
+        # features = tf.expand_dims(features, axis=-1)
 
         if self.normalize_feature:
             features = tf_normalize_audio_features(features, per_feature=self.normalize_per_feature)

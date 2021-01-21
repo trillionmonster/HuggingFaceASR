@@ -7,7 +7,7 @@ from tqdm import tqdm
 # list_files = subprocess.run(["sh","download.sh"])
 
 
-file_dir = "./ST-CMDS-20170001_1-OS"
+file_dir = "/home/wws/ST-CMDS-20170001_1-OS"
 
 transcripts = []
 

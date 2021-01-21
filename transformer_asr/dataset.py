@@ -47,7 +47,7 @@ def write_tfrecord_file(splitted_entries):
     print(f"\nCreated {shard_path}")
 
 
-def get_max_len(source_file_list, cache_path, tokenizer_name):
+def get_max_len(cache_path, tokenizer_name, source_file_list=None):
     """
 
     :param source_file_list: tsv file list [audio_path\tduration\ttranscript]
@@ -55,6 +55,7 @@ def get_max_len(source_file_list, cache_path, tokenizer_name):
     :param tokenizer_name: huggingface tokenizer_name
     :return:
     """
+
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
     if tf.io.gfile.exists(cache_path):
@@ -68,6 +69,9 @@ def get_max_len(source_file_list, cache_path, tokenizer_name):
 
         max_input_len = 0
         max_output_len = 0
+
+    if source_file_list is None:
+        return max_input_len, max_output_len
 
     for source_file in source_file_list:
 
@@ -86,9 +90,12 @@ def get_max_len(source_file_list, cache_path, tokenizer_name):
         print("max_input_len", max_input_len)
         print("max_output_len", max_output_len)
     with tf.io.gfile.GFile(cache_path, mode='w') as gf:
-        json.dump({
-            "max_input_len": max_input_len,
-            "max_output_len": max_output_len}, gf)
+        json.dump(
+            {
+                "max_input_len": max_input_len,
+                "max_output_len": max_output_len
+            },
+            gf)
 
     return max_input_len, max_output_len
 
@@ -177,7 +184,8 @@ class AsrDataset:
             self.speech_featurizer = TFSpeechFeaturizer(speech_config)
 
         if tokenizer_name:
-            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=False)
+        self.token_num = self.tokenizer.vocab_size
 
     def create_tfrecords(self):
 
@@ -205,14 +213,18 @@ class AsrDataset:
             audio = read_raw_audio(audio_byte, self.speech_featurizer.sample_rate)
 
             audio = self.speech_featurizer.extract(audio)
+            # print(audio.shape)
 
             audio = tf.convert_to_tensor(audio, tf.float32)
-
+            audio = tf.squeeze(audio)
+            # label = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(transcript.decode()))
             label = self.tokenizer.encode(transcript.decode())
 
-            label = tf.convert_to_tensor(label, tf.int32)
+            label = tf.one_hot(label, self.token_num)
 
-            audio_mask = tf.ones(audio.shape[0])
+            label = tf.convert_to_tensor(label, tf.float32)
+
+            audio_mask = tf.ones(audio.shape)
 
             return audio, audio_mask, label
 
@@ -228,8 +240,14 @@ class AsrDataset:
         return tf.numpy_function(
             self.preprocess,
             inp=[example["audio"], example["transcript"]],
-            Tout=[tf.float32, tf.float32, tf.int32]
+            Tout=[tf.float32, tf.float32, tf.float32]
         )
+
+    @tf.function
+    def reshape(self, audio, audio_mask, label):
+
+        # return {"audio": audio, "audio_mask": audio_mask, "predict": label}
+        return [audio, label]
 
     def build_dataset(self):
 
@@ -248,21 +266,22 @@ class AsrDataset:
                                           num_parallel_reads=tf.data.experimental.AUTOTUNE)
 
         dataset = dataset.map(self.parse, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        dataset = dataset.cache()
+
         dataset = dataset.shuffle(self.buffer_size, reshuffle_each_iteration=True)
 
         input_shape_for_tpu = self.speech_featurizer.shape
-        input_shape_for_tpu[
-            0] = self.max_input_len  # all samples should be padded to this length statically for TPU training
+        input_shape_for_tpu[0] = self.max_input_len  # all samples should be padded to this length statically for TPU
         dataset = dataset.padded_batch(
             batch_size=self.batch_size,
             padded_shapes=(
                 tf.TensorShape(input_shape_for_tpu),
-                tf.TensorShape([self.max_input_len]),
-                tf.TensorShape([self.max_output_len])
+                tf.TensorShape(input_shape_for_tpu),
+                tf.TensorShape([self.max_output_len, self.token_num])
             ),
-            padding_values=(0., 0., self.tokenizer.pad_token_id),
+            padding_values=(0., 0., 0.),
             drop_remainder=True
         )
 
+        dataset = dataset.map(self.reshape, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        dataset = dataset.cache()
         return dataset
