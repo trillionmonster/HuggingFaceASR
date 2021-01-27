@@ -6,7 +6,9 @@ import numpy as np
 import sys
 import tensorflow as tf
 import json
-import multiprocessing
+import os
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 
 def float_feature(list_of_floats):
@@ -24,27 +26,6 @@ def print_one_line(*args):
 
 def bytestring_feature(list_of_bytestrings):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=list_of_bytestrings))
-
-
-def to_tfrecord(path, audio, transcript):
-    feature = {
-        "path": bytestring_feature([path]),
-        "audio": bytestring_feature([audio]),
-        "transcript": bytestring_feature([transcript])
-    }
-    return tf.train.Example(features=tf.train.Features(feature=feature))
-
-
-def write_tfrecord_file(splitted_entries):
-    shard_path, entries = splitted_entries
-    with tf.io.TFRecordWriter(shard_path, options='ZLIB') as out:
-        for audio_file, _, transcript in entries:
-            with open(audio_file, "rb") as f:
-                audio = f.read()
-            example = to_tfrecord(bytes(audio_file, "utf-8"), audio, bytes(transcript, "utf-8"))
-            out.write(example.SerializeToString())
-            print_one_line("Processed:", audio_file)
-    print(f"\nCreated {shard_path}")
 
 
 def get_max_len(cache_path, tokenizer_name, source_file_list=None):
@@ -120,6 +101,14 @@ def read_entries(source_file, stage="dev"):
     return lines
 
 
+def to_tfrecord(audio, tokens):
+    feature = {
+        "audio_feature": float_feature(audio),
+        "tokens": int64_feature(tokens)
+    }
+    return tf.train.Example(features=tf.train.Features(feature=feature))
+
+
 class AsrDataset:
 
     def __init__(self,
@@ -187,6 +176,17 @@ class AsrDataset:
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=False)
         self.token_num = self.tokenizer.vocab_size
 
+    def write_tfrecord_file(self, splitted_entries):
+        shard_path, entries = splitted_entries
+
+        with tf.io.TFRecordWriter(shard_path, options='ZLIB') as out:
+            for audio_path, _, transcript in tqdm(entries):
+                audio, tokens = self.preprocess(audio_path, transcript)
+                example = to_tfrecord(audio, tokens)
+                out.write(example.SerializeToString())
+                # print_one_line("Processed:", audio_path)
+        print(f"\nCreated {shard_path}")
+
     def create_tfrecords(self):
 
         assert self.source_file, "source_file can not be null"
@@ -196,6 +196,7 @@ class AsrDataset:
         print(f"Creating {self.stage}.tfrecord ...")
 
         entries = read_entries(self.source_file, self.stage)
+
         assert len(entries) > 0
 
         def get_shard_path(shard_id):
@@ -205,49 +206,34 @@ class AsrDataset:
 
         splitted_entries = np.array_split(entries, self.tfrecords_shards)
 
-        with multiprocessing.Pool(self.tfrecords_shards) as pool:
-            pool.map(write_tfrecord_file, zip(shards, splitted_entries))
+        for item in tqdm(list(zip(shards, splitted_entries))):
 
-    def preprocess(self, audio_byte, transcript):
-        with tf.device("/CPU:0"):
-            audio = read_raw_audio(audio_byte, self.speech_featurizer.sample_rate)
+            self.write_tfrecord_file(item)
 
-            audio = self.speech_featurizer.extract(audio)
-            # print(audio.shape)
+    def preprocess(self, audio_path, transcript):
+        audio = read_raw_audio(audio_path, self.speech_featurizer.sample_rate)
+        audio = self.speech_featurizer.extract(audio)
+        audio = np.squeeze(audio)
 
-            audio = tf.convert_to_tensor(audio, tf.float32)
-            audio = tf.squeeze(audio)
-            # label = self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(transcript.decode()))
-            label = self.tokenizer.encode(transcript.decode())
+        tokens = self.tokenizer.encode(transcript)
 
-            label = tf.one_hot(label, self.token_num)
+        return audio.flatten(), tokens
 
-            label = tf.convert_to_tensor(label, tf.float32)
-
-            audio_mask = tf.ones(audio.shape)
-
-            return audio, audio_mask, label
-
-    @tf.function
     def parse(self, record):
-        feature_description = {
-            "audio": tf.io.FixedLenFeature([], tf.string),
-            "path": tf.io.FixedLenFeature([], tf.string),
-            "transcript": tf.io.FixedLenFeature([], tf.string)
-        }
-        example = tf.io.parse_single_example(record, feature_description)
 
-        return tf.numpy_function(
-            self.preprocess,
-            inp=[example["audio"], example["transcript"]],
-            Tout=[tf.float32, tf.float32, tf.float32]
-        )
+        example = tf.io.parse_single_example(record, {
+            "audio_feature": tf.io.FixedLenSequenceFeature([], tf.float32, allow_missing=True),
+            "tokens": tf.io.FixedLenSequenceFeature([], tf.int64, allow_missing=True),
+        })
+        audio = example["audio_feature"]
+        audio = tf.reshape(audio, [-1, 80])
+        tokens = example["tokens"]
 
-    @tf.function
-    def reshape(self, audio, audio_mask, label):
+        tokens = tf.one_hot(tokens, self.token_num)
 
-        # return {"audio": audio, "audio_mask": audio_mask, "predict": label}
-        return [audio, label]
+        tokens = tf.convert_to_tensor(tokens, tf.float32)
+
+        return [audio, tokens]
 
     def build_dataset(self):
 
@@ -275,13 +261,10 @@ class AsrDataset:
             batch_size=self.batch_size,
             padded_shapes=(
                 tf.TensorShape(input_shape_for_tpu),
-                tf.TensorShape(input_shape_for_tpu),
                 tf.TensorShape([self.max_output_len, self.token_num])
             ),
-            padding_values=(0., 0., 0.),
+            padding_values=(0., 0.),
             drop_remainder=True
         )
-
-        dataset = dataset.map(self.reshape, num_parallel_calls=tf.data.experimental.AUTOTUNE)
         dataset = dataset.cache()
         return dataset

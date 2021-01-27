@@ -1,5 +1,7 @@
 from transformer_asr.dataset import AsrDataset, get_max_len
+import os
 
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 # max_in, max_out = get_max_len("./cache/max_len.json", "hfl/chinese-roberta-wwm-ext",["./dev.tsv", "test.tsv", "train.tsv"])
 max_in, max_out = get_max_len("./cache/max_len.json",
                               "hfl/chinese-roberta-wwm-ext")  # ["./dev.tsv", "test.tsv", "train.tsv"])
@@ -17,12 +19,13 @@ speech_config = {
 }
 
 data = AsrDataset(batch_size=64,
-                  tfrecords_dir="./cache",
+                  tfrecords_dir="./cache_2",
                   max_input_len=max_in,
                   max_output_len=max_out,
-                  source_file="./dev.tsv",
+                  source_file="./data_demo.tsv",
                   stage="dev",
                   speech_config=speech_config,
+                  tfrecords_shards=16,
                   tokenizer_name="hfl/chinese-roberta-wwm-ext")
 
 d = data.build_dataset()
